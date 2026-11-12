@@ -20,7 +20,7 @@ class LoadService:
         if self.empty_value is not None and len(data.records) != expected:
             raise ValidationError(f"Se esperaban {expected:,} registros y se generaron {len(data.records):,}.")
 
-        inserted = self.repository.replace_period(data.records, create_ip)
+        inserted = self.repository.replace_all(data.records, create_ip)
         return LoadResult(
             excel_rows=data.valid_rows,
             measurement_columns=len(data.columns),

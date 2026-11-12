@@ -53,7 +53,9 @@ def create_app(service) -> Flask:
                     msg += f" {r.empty_cells:,} celdas vacías se cargaron con valor 0.".replace(",", ".")
                 if r.skipped_rows:
                     n = r.skipped_rows
-                    msg += f" Se omitió{'eron' if n > 1 else ''} {n} fila{'s' if n > 1 else ''} sin Fecha/Hora (filas de ejemplo)."
+                    msg += (f" Se omitieron {n} filas de ejemplo (sin Fecha/Hora)." if n > 1
+                            else " Se omitió 1 fila de ejemplo (sin Fecha/Hora).")
+                msg += " Los datos del archivo anterior fueron reemplazados."
                 flash(msg, "ok")
             except ValidationError as exc:
                 flash(str(exc), "error")

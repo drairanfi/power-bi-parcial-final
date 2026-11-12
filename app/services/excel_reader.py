@@ -16,8 +16,9 @@ import pandas as pd
 from app.domain.column_parser import ColumnParser, normalize_spaces
 from app.domain.models import ColumnInfo, ValidationError
 
-_DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y")
-_TIME_FORMATS = ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p")
+_DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y", "%d.%m.%Y", "%Y%m%d")
+_TIME_FORMATS = ("%H:%M", "%H:%M:%S", "%H:%M:%S.%f", "%I:%M %p", "%I:%M:%S %p", "%H%M")
+_EXCEL_EPOCH = datetime(1899, 12, 30)
 
 
 @dataclass
@@ -41,9 +42,22 @@ class ExcelReader:
         columns = self._parse_columns(df)
         sensors = self._sensor_map(sheets)
 
+        fechas, horas = df[self.cfg.DATE_COLUMN], df[self.cfg.TIME_COLUMN]
+        # Solo se omiten filas con Fecha y Hora vacías (filas de ejemplo 'AG10' / 'RHUM')
+        is_blank = lambda v: v is None or (not isinstance(v, str) and pd.isna(v)) or str(v).strip() == ""
+        example = fechas.map(is_blank) & horas.map(is_blank)
+        df = df[~example].copy()
+        skipped = int(example.sum())
+
         df["data_date"] = [self._combine(f, h) for f, h in zip(df[self.cfg.DATE_COLUMN], df[self.cfg.TIME_COLUMN])]
-        valid = df[df["data_date"].notna()]
-        skipped = len(df) - len(valid)
+        bad = df[df["data_date"].isna()]
+        if not bad.empty:
+            lines = [f"Fila {i + 1}: Fecha='{r[self.cfg.DATE_COLUMN]}', Hora='{r[self.cfg.TIME_COLUMN]}'"
+                     for i, r in bad.head(5).iterrows()]
+            raise ValidationError(
+                f"{len(bad)} filas tienen Fecha u Hora vacía o con formato no reconocido "
+                f"(formatos válidos: 2023-12-31 o 31/12/2023, y 23:30 o 11:30 p. m.):\n" + "\n".join(lines))
+        valid = df
         if valid.empty:
             raise ValidationError("El archivo no tiene filas con Fecha y Hora válidas.")
 
@@ -149,11 +163,16 @@ class ExcelReader:
             return v.date()
         if isinstance(v, date):
             return v
-        if v is None or pd.isna(v):
+        if v is None or (not isinstance(v, str) and pd.isna(v)):
             return None
+        text = str(v).strip()
+        number = ExcelReader._as_number(text)
+        if number is not None and number > 1000:          # fecha como número serial de Excel
+            return (_EXCEL_EPOCH + timedelta(days=int(number))).date()
+        first = text.replace("T", " ").split(" ")[0]       # '2023-12-31 00:00:00' -> '2023-12-31'
         for fmt in _DATE_FORMATS:
             try:
-                return datetime.strptime(str(v).strip()[:10], fmt).date()
+                return datetime.strptime(first, fmt).date()
             except ValueError:
                 continue
         return None
@@ -164,13 +183,32 @@ class ExcelReader:
             return v.time()
         if isinstance(v, time):
             return v
-        if v is None or pd.isna(v):
+        if isinstance(v, (timedelta, pd.Timedelta)):
+            return (datetime.min + v).time()
+        if v is None or (not isinstance(v, str) and pd.isna(v)):
             return None
-        if isinstance(v, (int, float)) and 0 <= v < 1:  # hora guardada como fracción de día
-            return (datetime.min + timedelta(days=float(v))).time().replace(microsecond=0)
+        text = str(v).strip()
+        number = ExcelReader._as_number(text)
+        if number is not None and 0 <= number < 1:          # hora como fracción de día de Excel
+            return (datetime.min + timedelta(seconds=round(number * 86400))).time()
+
+        # '11:30 p. m.' / '11:30 a.m.' -> '11:30 PM' / '11:30 AM'
+        low = text.lower().replace(".", "").replace("\xa0", " ")
+        low = low.replace("p m", "pm").replace("a m", "am").strip()
+        if low.endswith(("am", "pm")):
+            text = low[:-2].strip() + " " + low[-2:].upper()
+        elif " " in text:                                    # '1899-12-30 23:30:00' -> '23:30:00'
+            text = text.split(" ")[-1]
         for fmt in _TIME_FORMATS:
             try:
-                return datetime.strptime(str(v).strip(), fmt).time()
+                return datetime.strptime(text, fmt).time()
             except ValueError:
                 continue
         return None
+
+    @staticmethod
+    def _as_number(text):
+        try:
+            return float(text.replace(",", "."))
+        except ValueError:
+            return None

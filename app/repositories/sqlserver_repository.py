@@ -24,5 +24,8 @@ class SQLServerRepository(BaseRepository):
     def _prepare_cursor(self, cursor):
         cursor.fast_executemany = True  # 436 mil filas en segundos en vez de minutos
 
+    def _clear_sql(self):
+        return f"TRUNCATE TABLE dbo.{self.table}"  # más rápido que DELETE y también es transaccional
+
     def _limit_sql(self, select_sql, limit):
         return select_sql.replace("SELECT ", f"SELECT TOP ({int(limit)}) ", 1)

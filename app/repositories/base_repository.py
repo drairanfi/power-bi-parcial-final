@@ -26,29 +26,27 @@ class BaseRepository(ABC):
     @abstractmethod
     def _limit_sql(self, select_sql: str, limit: int) -> str: ...
 
+    def _clear_sql(self) -> str:
+        return f"DELETE FROM {self.table}"
+
     def _prepare_cursor(self, cursor):
         """Gancho para optimizar la inserción masiva."""
 
     # ------------------------------------------------------------- escritura
-    def replace_period(self, records: pd.DataFrame, create_ip=None) -> int:
-        """Inserta los registros. Si el mismo periodo ya se había cargado, lo reemplaza
-        (así subir dos veces el mismo Excel no duplica datos). Todo en una transacción."""
+    def replace_all(self, records: pd.DataFrame, create_ip=None) -> int:
+        """Reemplaza el contenido de la tabla temporal por el del Excel nuevo.
+        Todo va en una transacción: si algo falla, los datos anteriores se conservan."""
         now = datetime.now().replace(microsecond=0)
         rows = [
-            (int(r.id_sensor), r.data_type, float(r.data_value), r.data_date.to_pydatetime()
-             if hasattr(r.data_date, "to_pydatetime") else r.data_date, r.block_name, now, create_ip)
+            (int(r.id_sensor), r.data_type, float(r.data_value), self._dt(r.data_date),
+             r.block_name, now, create_ip)
             for r in records.itertuples(index=False)
         ]
-        start, end = records["data_date"].min(), records["data_date"].max()
-        types = sorted(records["data_type"].unique())
-        marks = ", ".join("?" for _ in types)
 
         with self.connect() as conn:
             cur = conn.cursor()
             try:
-                cur.execute(
-                    f"DELETE FROM {self.table} WHERE data_date BETWEEN ? AND ? AND data_type IN ({marks})",
-                    [self._dt(start), self._dt(end), *types])
+                cur.execute(self._clear_sql())
                 self._prepare_cursor(cur)
                 sql = (f"INSERT INTO {self.table} (id_sensor, data_type, data_value, data_date, block_name, "
                        f"create_date, create_ip) VALUES (?, ?, ?, ?, ?, ?, ?)")

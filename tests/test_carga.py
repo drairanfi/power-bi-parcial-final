@@ -138,3 +138,48 @@ def test_sin_columna_hora(tmp_path):
     f = excel_bytes([["Fecha", "Humedad AG10 - Betania %"], ["2023-12-31", "100"]])
     with pytest.raises(ValidationError, match="Hora"):
         make_service(tmp_path).load_excel(f)
+
+
+# ------------------------------------- un Excel nuevo reemplaza al anterior
+H = ["Fecha", "Hora", "Humedad AG10 - Betania %"]
+
+
+def test_excel_nuevo_reemplaza_al_anterior(tmp_path):
+    s = make_service(tmp_path)
+    s.load_excel(excel_bytes([H, ["2023-12-31", "23:30", "100"], ["2023-12-31", "23:00", "99"]]))
+    s.load_excel(excel_bytes([H, ["2024-01-05", "08:00", "55"]]))
+    rows, total = s.search(MeasurementFilter())
+    assert total == 1 and rows[0]["data_date"] == "2024-01-05 08:00"
+
+
+def test_error_conserva_datos_anteriores(tmp_path):
+    s = make_service(tmp_path)
+    s.load_excel(excel_bytes([H, ["2023-12-31", "23:30", "100"]]))
+    with pytest.raises(ValidationError):
+        s.load_excel(excel_bytes([H, ["2024-01-05", "08:00", "abc"]]))
+    assert s.repository.count(MeasurementFilter()) == 1
+
+
+# ------------------------------------------------ formatos de fecha y hora
+from datetime import datetime as _dt, time as _t, date as _d  # noqa: E402
+
+
+@pytest.mark.parametrize("fecha, hora", [
+    ("2023-12-31", "23:30"),
+    ("31/12/2023", "23:30:00"),
+    ("31/12/2023", "11:30 p. m."),
+    ("31/12/2023", "11:30 PM"),
+    ("2023-12-31 00:00:00", "1899-12-30 23:30:00"),
+    (_dt(2023, 12, 31), _t(23, 30)),
+    (_d(2023, 12, 31), "23:30"),
+    (45291, 0.9791666667),          # serial de Excel + fracción de día
+    ("45291", "0.9791666667"),
+])
+def test_formatos_fecha_hora(fecha, hora):
+    assert ExcelReader._combine(fecha, hora) == _dt(2023, 12, 31, 23, 30)
+
+
+def test_fecha_con_formato_raro_muestra_error(tmp_path):
+    f = excel_bytes([H, ["2023-12-31", "23:30", "1"], ["31 de diciembre", "23:00", "2"]])
+    with pytest.raises(ValidationError, match="Fila 3"):
+        make_service(tmp_path).load_excel(f)
